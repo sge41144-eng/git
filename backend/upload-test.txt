@@ -1,0 +1,4 @@
+Product: Upload Test Kit
+Audience: product operator
+Selling points: verifies UTF-8 text upload and retrieval
+Notes: this file is used to confirm document upload ingestion works.
