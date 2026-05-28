@@ -50,6 +50,8 @@ class ChatResponse(BaseModel):
     retrieved: list[SearchResult]
     memories: list[str]
     source_mode: str = "knowledge_llm"
+    session_summary: str | None = None
+    session_summary_updated: bool = False
     web_results: list[dict] = Field(default_factory=list)
     search_diagnostics: list[dict] = Field(default_factory=list)
     auto_memory_saved: bool = False

@@ -96,7 +96,7 @@ def mode_prompt(mode: str) -> str:
     return prompts.get(mode, prompts["qa"])
 
 
-def format_history(history: list[dict], limit: int = 10) -> str:
+def format_history(history: list[dict], limit: int = 16) -> str:
     if not history:
         return "暂无本轮上下文。"
     clipped = history[-limit:]
@@ -105,7 +105,7 @@ def format_history(history: list[dict], limit: int = 10) -> str:
         role = "用户" if item.get("role") == "user" else "助手"
         content = str(item.get("content", "")).strip()
         if content:
-            lines.append(f"{role}：{content[:800]}")
+            lines.append(f"{role}：{content[:1000]}")
     return "\n".join(lines) or "暂无本轮上下文。"
 
 
@@ -176,6 +176,76 @@ def heuristic_memory_summary(history: list[dict], latest_question: str, answer: 
     if len(history) >= 8:
         return f"阶段对话摘要：用户围绕产品运营助手持续讨论，最近关注：{text[:90]}"
     return None
+
+
+def summarize_session_context(
+    *,
+    previous_summary: str | None,
+    history: list[dict],
+    latest_question: str,
+    answer: str,
+) -> str:
+    if settings.llm_provider != "bailian":
+        return heuristic_session_summary(previous_summary, history, latest_question, answer)
+
+    history_text = format_history(history, limit=16)
+    client = BailianChatClient()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You maintain a compact session summary for a Chinese product operations assistant. "
+                "Keep only useful context for future turns in this same chat: user goals, unresolved questions, "
+                "important product facts, corrections, answer style preferences, and decisions. "
+                "Do not keep disposable small talk. Return Chinese only. Limit to 600 Chinese characters."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"上一版会话摘要：\n{previous_summary or '暂无'}\n\n"
+                f"最近对话：\n{history_text}\n\n"
+                f"最新用户问题：{latest_question}\n\n"
+                f"助手回答：{answer[:1200]}\n\n"
+                "请输出更新后的会话摘要。"
+            ),
+        },
+    ]
+    payload = {"model": settings.llm_model, "messages": messages, "temperature": 0.2}
+    request = urllib.request.Request(
+        client.url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.dashscope_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return heuristic_session_summary(previous_summary, history, latest_question, answer)
+    summary = result["choices"][0]["message"]["content"].strip()
+    return summary[:900] if summary else heuristic_session_summary(previous_summary, history, latest_question, answer)
+
+
+def heuristic_session_summary(
+    previous_summary: str | None,
+    history: list[dict],
+    latest_question: str,
+    answer: str,
+) -> str:
+    parts = []
+    if previous_summary:
+        parts.append(previous_summary.strip()[:500])
+    latest = latest_question.strip()
+    if latest:
+        parts.append(f"最近用户关注：{latest[:180]}")
+    if answer:
+        parts.append(f"最近回答要点：{answer.strip()[:220]}")
+    summary = "\n".join(part for part in parts if part)
+    return summary[:900] or "本轮会话暂无可沉淀摘要。"
 
 
 def generate_content_plan(

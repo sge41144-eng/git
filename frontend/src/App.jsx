@@ -134,7 +134,7 @@ function App() {
   async function sendChat() {
     const message = chat.message.trim()
     if (!message || loading) return
-    const history = messages.slice(-12).map(({ role, content }) => ({ role, content }))
+    const history = messages.slice(-24).map(({ role, content }) => ({ role, content }))
     setMessages((prev) => [...prev, { role: 'user', content: message }])
     update(setChat, 'message', '')
     setLoading(true)
@@ -152,6 +152,8 @@ function App() {
       const meta = [
         `${T.sourceMode}：${sourceModeLabels[data.source_mode] || data.source_mode}`,
         `参考资料：${data.retrieved?.length || 0} 条`,
+        data.session_summary ? '已读取会话摘要' : '',
+        data.session_summary_updated ? '会话摘要已更新' : '',
         data.web_results?.length ? `联网线索：${data.web_results.length} 条` : '',
         data.auto_memory_saved ? '已写入长期记忆' : '',
       ].filter(Boolean).join(' · ')
@@ -267,7 +269,7 @@ function ChatPanel({ chat, setChat, update, send, clear, loading }) {
       <label>{T.topK}<Select value={String(chat.top_k)} onChange={(v) => update(setChat, 'top_k', Number(v))} options={[['4', '4'], ['6', '6'], ['8', '8'], ['10', '10']]} /></label>
       <label className="inline-check">
         <input type="checkbox" checked={chat.auto_memory} onChange={(e) => update(setChat, 'auto_memory', e.target.checked)} />
-        自动总结有价值对话，写入长期记忆
+        自动维护会话摘要，并沉淀有价值长期记忆
       </label>
       <div className="quick">
         <button type="button" onClick={() => update(setChat, 'message', '生命阳光牛初乳和天美健牛初乳对比，我们有什么优势？只分析产品优劣势，不要客服话术。')}>竞品优势</button>

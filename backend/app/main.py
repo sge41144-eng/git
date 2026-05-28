@@ -10,8 +10,17 @@ from app.config import settings
 from app.db import Base, engine, get_db
 from app.document_loader import iter_supported_files, parse_file_bytes, parse_file_path
 from app.models import Chunk, Document, GenerationHistory, Memory, Product, ViralCase
-from app.llm import generate_answer, summarize_conversation_memory
-from app.rag import compose_answer, ingest_text, product_to_knowledge, recent_memories, search_chunks, split_text
+from app.llm import generate_answer, summarize_conversation_memory, summarize_session_context
+from app.rag import (
+    compose_answer,
+    get_session_summary,
+    ingest_text,
+    memory_context_for_chat,
+    product_to_knowledge,
+    recent_memories,
+    search_chunks,
+    split_text,
+)
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -621,7 +630,7 @@ def analyze_folder(payload: FolderAnalyzeRequest, db: Session = Depends(get_db))
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
-    history = [item.model_dump() for item in payload.history][-12:]
+    history = [item.model_dump() for item in payload.history][-24:]
     source_mode = normalize_source_mode(payload.source_mode)
     direct_memory = extract_direct_memory(payload.message)
     if direct_memory:
@@ -634,12 +643,14 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
             )
         )
         db.commit()
-        memories = recent_memories(db)
+        memories = memory_context_for_chat(db, payload.message, payload.session_id)
+        session_summary = get_session_summary(db, payload.session_id)
         return ChatResponse(
             answer=f"我记住了：{direct_memory}\n\n后面我会按这个规则来回答。你可以继续直接问产品、脚本或活动方案。",
             retrieved=[],
             memories=[memory.content for memory in memories],
             source_mode=source_mode,
+            session_summary=session_summary.content if session_summary else None,
             auto_memory_saved=True,
             auto_memory=direct_memory,
         )
@@ -652,7 +663,10 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 
     if source_mode in ("knowledge_only", "knowledge_llm", "web_knowledge_llm"):
         chunks = search_chunks(db, payload.message, limit=payload.top_k)
-        memories = recent_memories(db)
+        memories = memory_context_for_chat(db, payload.message, payload.session_id)
+    elif source_mode == "llm_only":
+        session_summary = get_session_summary(db, payload.session_id)
+        memories = [session_summary] if session_summary else []
 
     if source_mode == "web_knowledge_llm":
         search_queries = build_chat_search_queries(payload.message)
@@ -691,6 +705,8 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     answer = generate_answer(question, chunks, memories, mode=payload.mode, history=history) or compose_answer(question, chunks, memories)
     auto_memory_saved = False
     auto_memory_text = None
+    session_summary_updated = False
+    session_summary_text = get_session_summary(db, payload.session_id)
     if payload.auto_memory and should_summarize_memory(payload.message, history):
         auto_memory_text = summarize_conversation_memory(history, payload.message, answer)
         if auto_memory_text:
@@ -704,6 +720,27 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
             )
             db.commit()
             auto_memory_saved = True
+    if payload.auto_memory and should_update_session_summary(history):
+        previous_summary = session_summary_text.content if session_summary_text else None
+        updated_summary = summarize_session_context(
+            previous_summary=previous_summary,
+            history=history,
+            latest_question=payload.message,
+            answer=answer,
+        )
+        if session_summary_text:
+            session_summary_text.content = updated_summary
+        else:
+            session_summary_text = Memory(
+                memory_type="session_summary",
+                content=updated_summary,
+                importance=4,
+                memory_metadata={"session_id": payload.session_id, "source": "rolling_session_summary"},
+            )
+            db.add(session_summary_text)
+        db.commit()
+        session_summary_updated = True
+        memories = memory_context_for_chat(db, payload.message, payload.session_id)
     return ChatResponse(
         answer=answer,
         retrieved=[
@@ -717,6 +754,8 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         ],
         memories=[memory.content for memory in memories],
         source_mode=source_mode,
+        session_summary=session_summary_text.content if session_summary_text else None,
+        session_summary_updated=session_summary_updated,
         web_results=web_results,
         search_diagnostics=search_diagnostics,
         auto_memory_saved=auto_memory_saved,
@@ -770,6 +809,11 @@ def should_summarize_memory(message: str, history: list[dict]) -> bool:
         return True
     user_turns = [item for item in history if item.get("role") == "user"]
     return len(user_turns) > 0 and len(user_turns) % 6 == 0
+
+
+def should_update_session_summary(history: list[dict]) -> bool:
+    user_turns = [item for item in history if item.get("role") == "user"]
+    return len(user_turns) >= 6 and len(user_turns) % 4 == 0
 
 
 def extract_direct_memory(message: str) -> str | None:

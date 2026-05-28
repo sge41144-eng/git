@@ -145,6 +145,57 @@ def recent_memories(db: Session, limit: int = 5) -> list[Memory]:
     return db.query(Memory).order_by(Memory.created_at.desc()).limit(limit).all()
 
 
+def get_session_summary(db: Session, session_id: str) -> Memory | None:
+    return (
+        db.query(Memory)
+        .filter(Memory.memory_type == "session_summary")
+        .filter(Memory.memory_metadata["session_id"].astext == session_id)
+        .order_by(Memory.created_at.desc())
+        .first()
+    )
+
+
+def relevant_memories(
+    db: Session,
+    query: str,
+    *,
+    session_id: str | None = None,
+    limit: int = 8,
+) -> list[Memory]:
+    memories = (
+        db.query(Memory)
+        .filter(Memory.memory_type != "session_summary")
+        .order_by(Memory.created_at.desc())
+        .limit(120)
+        .all()
+    )
+    scored = []
+    for memory in memories:
+        metadata = memory.memory_metadata or {}
+        memory_session = metadata.get("session_id")
+        if memory_session and session_id and memory_session != session_id and memory.memory_type == "auto_summary":
+            continue
+        keyword_score = keyword_overlap(query, memory.content)
+        importance_score = min(max(memory.importance, 1), 5) / 5
+        type_bonus = 0.25 if memory.memory_type in {"user_instruction", "user_preference"} else 0.0
+        score = (0.55 * keyword_score) + (0.35 * importance_score) + type_bonus
+        if keyword_score > 0 or memory.importance >= 4 or memory.memory_type in {"user_instruction", "user_preference"}:
+            scored.append((score, memory))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [memory for _, memory in scored[:limit]]
+
+
+def memory_context_for_chat(db: Session, query: str, session_id: str, limit: int = 8) -> list[Memory]:
+    memories: list[Memory] = []
+    summary = get_session_summary(db, session_id)
+    if summary:
+        memories.append(summary)
+    for memory in relevant_memories(db, query, session_id=session_id, limit=limit):
+        if all(existing.id != memory.id for existing in memories):
+            memories.append(memory)
+    return memories[: limit + 1]
+
+
 def compose_answer(question: str, chunks: list[dict], memories: list[Memory]) -> str:
     if not chunks:
         return "我还没有检索到相关产品资料。你可以先添加产品，或上传产品文档后再问我。"

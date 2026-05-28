@@ -21,10 +21,10 @@ services:
     build:
       context: ./backend
     container_name: product-agent-api
+    env_file:
+      - ./backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://product_agent:product_agent_dev@db:5432/product_agent
-      EMBEDDING_PROVIDER: hashing
-      OPENAI_API_KEY: ""
     ports:
       - "8000:8000"
     volumes:
@@ -33,4 +33,3 @@ services:
     depends_on:
       db:
         condition: service_healthy
-
